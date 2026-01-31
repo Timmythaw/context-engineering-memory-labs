@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "langchain>=1.2.7",
+    "langchain-google-genai>=4.2.0",
     "langgraph>=1.0.7",
     "pandas>=2.3.3",
     "pypdf2>=3.0.1",
