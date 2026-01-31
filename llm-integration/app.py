@@ -26,54 +26,61 @@ def show_agent_process(agent, user_message):
     """
     config = {"configurable": {"thread_id": agent.thread_id}}
     
-    # Container for streaming updates
-    process_container = st.container()
+    st.markdown("### Agent Process")
     
-    with process_container:
-        st.markdown("###Agent Process")
+    try:
+        # Use invoke instead of stream for cleaner output
+        response = agent.agent.invoke(
+            {"messages": [HumanMessage(content=user_message)]},
+            config=config
+        )
         
-        try:
-            # Stream the agent's execution
-            events = agent.agent.stream(
-                {"messages": [HumanMessage(content=user_message)]},
-                config=config,
-                stream_mode="values"
-            )
+        # Extract messages
+        if "messages" in response:
+            messages = response["messages"]
             
-            final_response = None
             step_count = 0
+            final_response = None
             
-            # Process each event from the stream
-            for event in events:
-                if "messages" in event:
-                    messages = event["messages"]
+            # Process each message
+            for msg in messages:
+                # Skip user messages
+                if isinstance(msg, HumanMessage):
+                    continue
+                
+                # Check for tool calls (agent deciding to use a tool)
+                if isinstance(msg, AIMessage):
+                    if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                        step_count += 1
+                        with st.expander(f"Step {step_count}: Tool Selection", expanded=True):
+                            for tool_call in msg.tool_calls:
+                                st.markdown(f"**Agent decided to use:** `{tool_call.get('name', 'unknown')}`")
+                                args = tool_call.get('args', {})
+                                if 'query' in args:
+                                    st.code(f"Query: {args['query']}", language="text")
                     
-                    # Get the last message
-                    if messages:
-                        last_msg = messages[-1]
-                        
-                        # Show different types of messages
-                        if isinstance(last_msg, AIMessage):
-                            step_count += 1
-                            
-                            # Check if it's a tool call
-                            if hasattr(last_msg, 'tool_calls') and last_msg.tool_calls:
-                                with st.expander(f"Step {step_count}: Tool Selection", expanded=True):
-                                    for tool_call in last_msg.tool_calls:
-                                        st.markdown(f"**Agent decided to use:** `{tool_call.get('name', 'unknown')}`")
-                                        st.code(f"Query: {tool_call.get('args', {}).get('query', 'N/A')}", language="text")
-                            
-                            # Check if it has content (final response)
-                            elif last_msg.content:
-                                final_response = last_msg.content
-                        
-                        elif isinstance(last_msg, ToolMessage):
-                            step_count += 1
-                            with st.expander(f"Step {step_count}: Tool Execution Result", expanded=True):
-                                # Show truncated result - ensure content is string
-                                content_str = str(last_msg.content) if not isinstance(last_msg.content, str) else last_msg.content
-                                result_preview = content_str[:300] + "..." if len(content_str) > 300 else content_str
-                                st.markdown(result_preview)
+                    # Check for final text response
+                    elif msg.content:
+                        if isinstance(msg.content, str):
+                            final_response = msg.content
+                        elif isinstance(msg.content, list):
+                            # Extract text from structured content
+                            text_parts = []
+                            for item in msg.content:
+                                if isinstance(item, dict) and item.get('type') == 'text':
+                                    text_parts.append(item.get('text', ''))
+                                elif isinstance(item, str):
+                                    text_parts.append(item)
+                            final_response = ''.join(text_parts)
+                
+                # Check for tool results
+                elif isinstance(msg, ToolMessage):
+                    step_count += 1
+                    with st.expander(f"Step {step_count}: Tool Execution Result", expanded=True):
+                        # Show truncated result - ensure content is string
+                        content_str = str(msg.content) if not isinstance(msg.content, str) else msg.content
+                        result_preview = content_str[:300] + "..." if len(content_str) > 300 else content_str
+                        st.markdown(result_preview)
             
             # Show final response
             if final_response:
@@ -81,13 +88,33 @@ def show_agent_process(agent, user_message):
                 st.markdown("### Final Response")
                 return final_response
             else:
-                return "Sorry, I couldn't generate a response."
+                # Fallback: get the last AI message content
+                for msg in reversed(messages):
+                    if isinstance(msg, AIMessage) and msg.content:
+                        st.divider()
+                        st.markdown("### Final Response")
+                        # Extract text from structured content if needed
+                        if isinstance(msg.content, str):
+                            return msg.content
+                        elif isinstance(msg.content, list):
+                            text_parts = []
+                            for item in msg.content:
+                                if isinstance(item, dict) and item.get('type') == 'text':
+                                    text_parts.append(item.get('text', ''))
+                                elif isinstance(item, str):
+                                    text_parts.append(item)
+                            return ''.join(text_parts)
+                        return str(msg.content)
                 
-        except Exception as e:
-            st.error(f"Error during processing: {str(e)}")
-            # Fallback to simple invoke
-            response = agent.chat(user_message)
-            return response
+                return "Sorry, I couldn't generate a response."
+        
+        return "No response generated."
+        
+    except Exception as e:
+        st.error(f"Error during processing: {str(e)}")
+        # Fallback to simple chat method
+        return agent.chat(user_message)
+
 
 def main():
     st.set_page_config(page_title="AI Agent with Gemini", layout="wide")
@@ -194,7 +221,7 @@ def main():
     with col1:
         uploaded_files = st.file_uploader(
             "Upload documents for the agent to reference",
-            type=['txt', 'md', 'py', 'json', 'csv'],
+            type=['txt', 'md', 'py', 'json', 'csv', 'pdf'],
             accept_multiple_files=True,
             key="file_uploader"
         )

@@ -61,8 +61,9 @@ class AIAgent:
             response = "**Document Search Results**\n\n"
             for i, (doc_name, content, similarity) in enumerate(results, 1):
                 response += f"**{doc_name}**\n"
-                response += f"  ├─ Relevance: {similarity:.1%}\n"
-                response += f"  └─ Preview: {content[:200]}...\n\n"
+                response += f"Relevance: {similarity:.1%}\n\n"
+                response += f"{content}\n\n"
+                response += "---\n\n"
             
             return response
         except Exception as e:
