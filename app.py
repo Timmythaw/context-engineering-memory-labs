@@ -17,103 +17,126 @@ load_dotenv()
 sys.path.append(str(Path(__file__).parent.parent))
 from token_estimator.token_estimator import read_file
 
-from agent import AIAgent
+from llm_integration import AIAgent
 
 def show_agent_process(agent, user_message):
     """
-    Stream agent process and show thinking, tool calls, and final response.
-    This shows the REAL agent process, not hardcoded steps.
+    Enhanced agent process with loading indicators.
+    Shows REAL agent process with status updates.
     """
     config = {"configurable": {"thread_id": agent.thread_id}}
     
-    st.markdown("### Agent Process")
-    
-    try:
-        # Use invoke instead of stream for cleaner output
-        response = agent.agent.invoke(
-            {"messages": [HumanMessage(content=user_message)]},
-            config=config
-        )
+    # Show loading status
+    with st.status("AI Agent Processing...", expanded=True) as status:
+        st.write("Analyzing your question...")
         
-        # Extract messages
-        if "messages" in response:
-            messages = response["messages"]
+        # Check if documents available
+        doc_count = agent.get_document_count()
+        if doc_count > 0:
+            st.write(f"Searching through {doc_count} document(s)...")
+        
+        st.write("Deciding which tools to use...")
+        
+        try:
+            import time
+            start_time = time.time()
             
-            step_count = 0
-            final_response = None
+            # Use invoke to get agent response
+            response = agent.agent.invoke(
+                {"messages": [HumanMessage(content=user_message)]},
+                config=config
+            )
             
-            # Process each message
-            for msg in messages:
-                # Skip user messages
-                if isinstance(msg, HumanMessage):
-                    continue
+            elapsed_time = time.time() - start_time
+            
+            # Update status to complete
+            status.update(
+                label=f"Complete! ({elapsed_time:.1f}s)", 
+                state="complete", 
+                expanded=False
+            )
+            
+            # Extract messages and show process
+            if "messages" in response:
+                messages = response["messages"]
                 
-                # Check for tool calls (agent deciding to use a tool)
-                if isinstance(msg, AIMessage):
-                    if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                        step_count += 1
-                        with st.expander(f"Step {step_count}: Tool Selection", expanded=True):
-                            for tool_call in msg.tool_calls:
-                                st.markdown(f"**Agent decided to use:** `{tool_call.get('name', 'unknown')}`")
-                                args = tool_call.get('args', {})
-                                if 'query' in args:
-                                    st.code(f"Query: {args['query']}", language="text")
+                step_count = 0
+                final_response = None
+                tool_used = False
+                
+                # Process each message
+                for msg in messages:
+                    # Skip user messages
+                    if isinstance(msg, HumanMessage):
+                        continue
                     
-                    # Check for final text response
-                    elif msg.content:
-                        if isinstance(msg.content, str):
-                            final_response = msg.content
-                        elif isinstance(msg.content, list):
-                            # Extract text from structured content
-                            text_parts = []
-                            for item in msg.content:
-                                if isinstance(item, dict) and item.get('type') == 'text':
-                                    text_parts.append(item.get('text', ''))
-                                elif isinstance(item, str):
-                                    text_parts.append(item)
-                            final_response = ''.join(text_parts)
+                    # Check for tool calls (agent deciding to use a tool)
+                    if isinstance(msg, AIMessage):
+                        if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                            tool_used = True
+                            step_count += 1
+                            with st.expander(f"Step {step_count}: Tool Used", expanded=False):
+                                for tool_call in msg.tool_calls:
+                                    st.markdown(f"**{tool_call.get('name', 'unknown')}**")
+                                    args = tool_call.get('args', {})
+                                    if 'query' in args:
+                                        st.code(args['query'], language="text")
+                        
+                        # Check for final text response
+                        elif msg.content:
+                            if isinstance(msg.content, str):
+                                final_response = msg.content
+                            elif isinstance(msg.content, list):
+                                # Extract text from structured content
+                                text_parts = []
+                                for item in msg.content:
+                                    if isinstance(item, dict) and item.get('type') == 'text':
+                                        text_parts.append(item.get('text', ''))
+                                    elif isinstance(item, str):
+                                        text_parts.append(item)
+                                final_response = ''.join(text_parts)
+                    
+                    # Check for tool results
+                    elif isinstance(msg, ToolMessage):
+                        step_count += 1
+                        with st.expander(f"Step {step_count}: Search Results", expanded=False):
+                            # Show truncated result - ensure content is string
+                            content_str = str(msg.content) if not isinstance(msg.content, str) else msg.content
+                            result_preview = content_str[:300] + "..." if len(content_str) > 300 else content_str
+                            st.markdown(result_preview)
                 
-                # Check for tool results
-                elif isinstance(msg, ToolMessage):
-                    step_count += 1
-                    with st.expander(f"Step {step_count}: Tool Execution Result", expanded=True):
-                        # Show truncated result - ensure content is string
-                        content_str = str(msg.content) if not isinstance(msg.content, str) else msg.content
-                        result_preview = content_str[:300] + "..." if len(content_str) > 300 else content_str
-                        st.markdown(result_preview)
+                # Show badge if tool was used
+                if tool_used:
+                    st.success("🔍 Used document search to answer your question")
+                
+                # Return final response or fallback
+                if final_response:
+                    return final_response
+                else:
+                    # Fallback: get the last AI message content
+                    for msg in reversed(messages):
+                        if isinstance(msg, AIMessage) and msg.content:
+                            # Extract text from structured content if needed
+                            if isinstance(msg.content, str):
+                                return msg.content
+                            elif isinstance(msg.content, list):
+                                text_parts = []
+                                for item in msg.content:
+                                    if isinstance(item, dict) and item.get('type') == 'text':
+                                        text_parts.append(item.get('text', ''))
+                                    elif isinstance(item, str):
+                                        text_parts.append(item)
+                                return ''.join(text_parts)
+                            return str(msg.content)
+                    
+                    return "Sorry, I couldn't generate a response."
             
-            # Show final response
-            if final_response:
-                st.divider()
-                st.markdown("### Final Response")
-                return final_response
-            else:
-                # Fallback: get the last AI message content
-                for msg in reversed(messages):
-                    if isinstance(msg, AIMessage) and msg.content:
-                        st.divider()
-                        st.markdown("### Final Response")
-                        # Extract text from structured content if needed
-                        if isinstance(msg.content, str):
-                            return msg.content
-                        elif isinstance(msg.content, list):
-                            text_parts = []
-                            for item in msg.content:
-                                if isinstance(item, dict) and item.get('type') == 'text':
-                                    text_parts.append(item.get('text', ''))
-                                elif isinstance(item, str):
-                                    text_parts.append(item)
-                            return ''.join(text_parts)
-                        return str(msg.content)
-                
-                return "Sorry, I couldn't generate a response."
-        
-        return "No response generated."
-        
-    except Exception as e:
-        st.error(f"Error during processing: {str(e)}")
-        # Fallback to simple chat method
-        return agent.chat(user_message)
+            return "No response generated."
+            
+        except Exception as e:
+            status.update(label="Error", state="error", expanded=True)
+            st.error(f"Error: {str(e)}")
+            return agent.chat(user_message)
 
 
 def main():
